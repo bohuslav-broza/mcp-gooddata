@@ -1,0 +1,210 @@
+---
+description: GoodData MCP project rules for metrics, attributes, and filters
+alwaysApply: true
+---
+
+# GoodData MCP Project Rules
+
+## Context
+
+This project provides a custom MCP server for GoodData analytics. Always use the MCP tools (`mcp_gooddata-local_*`) to interact with the GoodData workspace.
+
+## ⚡ FAST PATH: The 3-Step Workflow (Target: <10 seconds)
+
+For most queries, follow this minimal workflow:
+
+```
+1. Search for metric → mcp_gooddata-local_search with types: ["metric"]
+2. Explain metric → mcp_gooddata-local_explain_metric to get MAQL & date labels
+3. Fetch data → mcp_gooddata-local_fetch_metrics_dataset with explicit IDs
+```
+
+**Example:**
+
+```json
+// Step 1: Search
+{ "term": "MRR", "types": ["metric"] }
+// → Found: "account_mrr_sum"
+
+// Step 2: Explain (tells you date labels exist)
+{ "metric_id": "account_mrr_sum" }
+// → Output shows: uses "Snapshot date - Date" label
+
+// Step 3: Fetch (use what you learned)
+{
+  "metrics": ["metric/account_mrr_sum"],
+  "dimensions": ["label/account_name"],
+  "attribute_filters": {"label/snapshot_date.month": ["2025-10"]},
+  "output_format": "csv"
+}
+```
+
+**STOP HERE.** Don't search for date labels that `explain_metric` already told you exist.
+
+## Rule 1: Trust `explain_metric` Output
+
+The `explain_metric` response tells you EVERYTHING you need:
+
+- **MAQL formula**: Shows computation logic
+- **Date linkage**: Lists which date labels the metric uses (e.g., "Snapshot date - Date")
+- **Dependencies**: What facts, datasets, and other metrics it uses
+
+### Known Date Label Patterns
+
+Once `explain_metric` mentions a date dataset, these labels typically exist:
+
+- `label/snapshot_date.day` → Daily granularity
+- `label/snapshot_date.month` → Monthly (format: "YYYY-MM")
+- `label/snapshot_date.quarter` → Quarterly
+- `label/snapshot_date.year` → Yearly
+
+**DO NOT search for these.** Just use them directly after seeing the date in `explain_metric`.
+
+## Rule 2: Search Only What You Need
+
+**Search for business attributes only:**
+
+- Customer dimensions: `{ "term": "account name", "types": ["attribute"] }`
+- Organizational dimensions: `{ "term": "region", "types": ["attribute"] }`
+- Product dimensions: `{ "term": "product", "types": ["attribute"] }`
+
+**DO NOT search for:**
+
+- ❌ Date labels (they're in `explain_metric`)
+- ❌ Labels you already found (e.g., don't search "snapshot_date.month" after seeing "snapshot_date")
+- ❌ Variations of the same thing (pick one search term)
+
+## Rule 3: Use Canonical Identifiers with Prefixes
+
+Once you know the IDs, always use the proper prefix:
+
+- **Metrics**: `metric/account_mrr_sum` (not just `account_mrr_sum`)
+- **Labels**: `label/account_name`, `label/snapshot_date.month` (not just `account_name`)
+- **Never use natural-language `prompt`** once you have exact IDs
+
+## Rule 4: Work Correctly with Attribute Filters
+
+### Filter by label IDs (NOT titles or dataset names)
+
+Example for filtering by snapshot month:
+
+```json
+{
+  "metrics": ["account_mrr_sum"],
+  "dimensions": ["account_name"],
+  "attribute_filters": { "label/snapshot_date.month": ["2025-10"] },
+  "output_format": "json"
+}
+```
+
+### Date filtering options
+
+- **Exact month filter**: `"label/snapshot_date.month": ["YYYY-MM"]`
+- **Relative window**: Use `months` and `include_current` parameters (requires a date dataset; include a date label in `dimensions` or pass `date_dataset_id`)
+
+### Pagination and output format
+
+- **Default limit**: 50 rows (server-side default when `limit` is omitted)
+- **All rows**: Omit `limit` parameter OR set `limit: null` (returns all data)
+- **CSV export**: Use `output_format: "csv"` for large datasets (best for >100 rows)
+- **Auto format**: Use `output_format: "auto"` (switches to CSV if >100 rows, otherwise JSON)
+- **JSON format**: Use `output_format: "json"` for smaller datasets (default)
+
+**Note**: The `limit` parameter must be an integer or null. Using 0 will cause an error.
+
+### Sorting
+
+Use `sort` on resolved column aliases (e.g., `metric_account_mrr_sum`):
+
+```json
+{
+  "metrics": ["account_mrr_sum"],
+  "dimensions": ["account_name"],
+  "attribute_filters": { "label/snapshot_date.month": ["2025-10"] },
+  "sort": ["-metric_account_mrr_sum"],
+  "output_format": "json"
+}
+```
+
+Use `-` prefix for descending, `+` or no prefix for ascending.
+
+### Validate filters
+
+Always inspect `meta.filters` in responses to confirm attribute filters are applied:
+
+```json
+{
+  "type": "attribute",
+  "label_id": "label/snapshot_date.month",
+  "values": ["2025-10"]
+}
+```
+
+## Quick Checklist
+
+- [ ] Search for metric with `types: ["metric"]`
+- [ ] Run `explain_metric` - this tells you date labels, no need to search for them
+- [ ] Search for business attributes only (dimensions like account, product, region)
+- [ ] Use `label/` prefix for all dimensions and filters
+- [ ] Use `metric/` prefix for all metrics
+- [ ] Choose output format: `"csv"` for large datasets, `"auto"` is safe default
+- [ ] Omit `limit` or use `limit: null` to get all rows (default is 50)
+- [ ] Verify filters in `meta.filters` and check `total_row_count` in response
+
+## Common Pitfalls to Avoid
+
+### Wasting Time on Unnecessary Searches
+
+❌ **BAD**: After `explain_metric` shows "Snapshot date - Date", searching for:
+
+```json
+{ "term": "snapshot_date.month", "types": ["attribute"] }
+{ "term": "snapshot", "types": ["attribute"] }
+{ "term": "snapshot date", "types": [] }
+```
+
+✅ **GOOD**: Just use `label/snapshot_date.month` directly in filters
+
+### Parameter Errors
+
+❌ **BAD**: `"limit": 0` (causes type error)
+✅ **GOOD**: Omit `limit` entirely or use `"limit": null`
+
+### Missing Prefixes
+
+❌ **BAD**: Using attribute titles in filters
+
+```json
+"attribute_filters": { "snapshot_date.month": ["2025-10"] }
+```
+
+✅ **GOOD**: Use label IDs with `label/` prefix
+
+```json
+"attribute_filters": { "label/snapshot_date.month": ["2025-10"] }
+```
+
+### Over-verification
+
+❌ **BAD**: Multiple searches for the same concept
+
+```json
+// Don't do all of these:
+{ "term": "account name", "types": ["attribute"] }
+{ "term": "account_name", "types": ["attribute"] }
+{ "term": "customer name", "types": ["attribute"] }
+```
+
+✅ **GOOD**: Pick ONE search term and trust the result
+
+### Using Natural Language When You Have IDs
+
+❌ **BAD**: `"prompt": "show me MRR by account"` (when you know the IDs)
+✅ **GOOD**: Use explicit parameters
+
+```json
+{
+  "metrics": ["metric/account_mrr_sum"],
+  "dimensions": ["label/account_name"]
+}
+```
